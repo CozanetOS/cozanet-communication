@@ -1,10 +1,15 @@
-import { Message, Subscription } from '../types';
+import EventEmitter from 'eventemitter3';
+import pino from 'pino';
+
+const logger = pino({ name: 'EventBus' });
 
 export class EventBus {
   private static instance: EventBus;
-  private listeners: Map<string, Set<(msg: Message) => void>> = new Map();
+  private emitter: EventEmitter;
 
-  private constructor() {}
+  private constructor() {
+    this.emitter = new EventEmitter();
+  }
 
   public static getInstance(): EventBus {
     if (!EventBus.instance) {
@@ -13,72 +18,34 @@ export class EventBus {
     return EventBus.instance;
   }
 
-  public subscribe(engineId: string, eventType: string, handler: (msg: Message) => void): void {
-    const key = `${engineId}:${eventType}`;
-    if (!this.listeners.has(key)) {
-      this.listeners.set(key, new Set());
-    }
-    this.listeners.get(key)!.add(handler);
+  public on(event: string | symbol, fn: (...args: any[]) => void, context?: any): this {
+    this.emitter.on(event, fn, context);
+    return this;
   }
 
-  public unsubscribe(engineId: string, eventType: string): void {
-    const key = `${engineId}:${eventType}`;
-    this.listeners.delete(key);
+  public off(event: string | symbol, fn?: (...args: any[]) => void, context?: any, once?: boolean): this {
+    this.emitter.off(event, fn, context, once);
+    return this;
   }
 
-  public publish(event: Message): void {
-    const wildKey = `*:${event.type}`;
-    const specificKey = `${event.to}:${event.type}`;
-    const broadcastKey = `broadcast:${event.type}`;
+  public emit(event: string | symbol, ...args: any[]): boolean {
+    logger.debug({ event }, 'Emitting event');
+    return this.emitter.emit(event, ...args);
+  }
 
-    const targets = [wildKey, specificKey, broadcastKey];
-
-    for (const key of targets) {
-      const handlers = this.listeners.get(key);
-      if (handlers) {
-        for (const handler of handlers) {
-          try {
-            handler(event);
-          } catch (err) {
-            console.error(`Error invoking event listener for key ${key}:`, err);
-          }
-        }
+  public onAny(fn: (event: string | symbol, ...args: any[]) => void): this {
+    // EventEmitter3 does not have onAny built-in. We hook into emit to support it.
+    const originalEmit = this.emitter.emit.bind(this.emitter);
+    this.emitter.emit = (event: string | symbol, ...args: any[]) => {
+      try {
+        fn(event, ...args);
+      } catch (err) {
+        logger.error({ err }, 'Error in onAny listener');
       }
-    }
-  }
-
-  public async publishAsync(event: Message): Promise<void> {
-    const wildKey = `*:${event.type}`;
-    const specificKey = `${event.to}:${event.type}`;
-    const broadcastKey = `broadcast:${event.type}`;
-
-    const targets = [wildKey, specificKey, broadcastKey];
-    const promises: Promise<void>[] = [];
-
-    for (const key of targets) {
-      const handlers = this.listeners.get(key);
-      if (handlers) {
-        for (const handler of handlers) {
-          promises.push(
-            (async () => {
-              try {
-                await handler(event);
-              } catch (err) {
-                console.error(`Error invoking async event listener for key ${key}:`, err);
-              }
-            })()
-          );
-        }
-      }
-    }
-
-    await Promise.all(promises);
-  }
-
-  /**
-   * Helper to clear all listeners (useful for testing/resetting state).
-   */
-  public clear(): void {
-    this.listeners.clear();
+      return originalEmit(event, ...args);
+    };
+    return this;
   }
 }
+
+export const eventBus = EventBus.getInstance();
