@@ -1,38 +1,54 @@
-import { Message } from '../types';
+import PQueue from 'p-queue';
+import pino from 'pino';
 
-interface QueueItem {
-  msg: Message;
-  priority: number;
-}
+const logger = pino({ name: 'PriorityQueue' });
 
-export class MessageQueue {
-  private queue: QueueItem[] = [];
+export class PriorityQueue {
+  private queue: PQueue;
 
-  public enqueue(msg: Message, priority: number = 0): void {
-    this.queue.push({ msg, priority });
-    // Sort in descending order of priority (higher priority number first)
-    this.queue.sort((a, b) => b.priority - a.priority);
+  constructor(concurrency = 1) {
+    this.queue = new PQueue({ concurrency });
+    
+    this.queue.on('active', () => {
+      logger.debug({ size: this.queue.size, pending: this.queue.pending }, 'Queue task active');
+    });
+
+    this.queue.on('idle', () => {
+      logger.debug('Queue is now idle');
+    });
   }
 
-  public dequeue(): Message | null {
-    const item = this.queue.shift();
-    return item ? item.msg : null;
+  /**
+   * Enqueue an async task with optional priority (higher value processed first)
+   */
+  public async enqueue<T>(task: () => Promise<T> | T, priority = 0): Promise<T> {
+    return this.queue.add(task, { priority });
+  }
+
+  public pause(): void {
+    logger.info('Queue execution paused');
+    this.queue.pause();
+  }
+
+  public resume(): void {
+    logger.info('Queue execution resumed');
+    this.queue.start();
+  }
+
+  public isPaused(): boolean {
+    return this.queue.isPaused;
   }
 
   public size(): number {
-    return this.queue.length;
+    return this.queue.size;
   }
 
-  public async process(handler: (msg: Message) => Promise<void>): Promise<void> {
-    while (this.size() > 0) {
-      const msg = this.dequeue();
-      if (msg) {
-        try {
-          await handler(msg);
-        } catch (err) {
-          console.error(`Failed to process queue message ${msg.id}:`, err);
-        }
-      }
-    }
+  public pending(): number {
+    return this.queue.pending;
+  }
+
+  public clear(): void {
+    logger.warn('Clearing priority queue tasks');
+    this.queue.clear();
   }
 }
